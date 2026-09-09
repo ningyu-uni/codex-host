@@ -1,0 +1,67 @@
+#!/bin/sh
+# codexhost AppImage entry point.
+#
+# Mirrors the dispatch of the npm bin launcher (scripts/release/prepare-npm.mjs)
+# but resolves the Node runtime, Shim, and JavaScript bundles inside the mounted
+# AppImage instead of the caller's environment.
+set -eu
+
+here="$(dirname "$(readlink -f "$0")")"
+node="$here/usr/node/bin/node"
+launcher="$here/usr/bin/codexhost"
+shim="$here/usr/libexec/codexhost-shim"
+host_runtime="$here/usr/app/host-runtime.mjs"
+desktop_controller="$here/usr/app/desktop-controller.mjs"
+renderer="$here/usr/app/renderer-extension.js"
+
+CODEXHOST_CLI_PATH="${APPIMAGE:-$0}"
+export CODEXHOST_CLI_PATH
+
+command="${1-}"
+case "$command" in
+  "" | launch)
+    if [ "$#" -gt 0 ]; then shift; fi
+    exec "$launcher" launch \
+      --node "$node" \
+      --shim "$shim" \
+      --host-runtime "$host_runtime" \
+      --desktop-controller "$desktop_controller" \
+      --renderer "$renderer" \
+      "$@"
+    ;;
+  inspect)
+    exec "$launcher" "$@"
+    ;;
+  remote)
+    shift
+    exec "$node" "$host_runtime" --codexhost-remote "$@" \
+      --node "$node" --shim "$shim" --host-runtime "$host_runtime"
+    ;;
+  harness | delegate | thread)
+    exec "$node" "$host_runtime" --codexhost-delegation-cli "$@"
+    ;;
+  --version | -v)
+    echo "@VERSION@"
+    ;;
+  --help | -h)
+    cat <<'USAGE'
+usage:
+  codexhost.AppImage
+  codexhost.AppImage --version
+  codexhost.AppImage inspect
+  codexhost.AppImage launch [launcher options]
+  codexhost.AppImage remote install|start|stop|status|uninstall
+  codexhost.AppImage delegate --help
+  codexhost.AppImage harness inspect ...
+  codexhost.AppImage thread send|cancel|read|wait|list ...
+
+This AppImage carries its own Node.js runtime and the packaged Rust launcher
+and Shim. Codex Desktop must already be installed. When it is unpacked outside
+/usr/lib/chatgpt, point CODEXHOST_INSTALL_ROOT at the package root.
+USAGE
+    ;;
+  *)
+    echo "codexhost: unknown command '$command'. Run 'codexhost --help' for usage." >&2
+    exit 1
+    ;;
+esac

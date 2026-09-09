@@ -1,0 +1,14 @@
+*
+!package.json
+!package-lock.json
+!tsconfig.json
+!tsconfig.base.json
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!.node-version
+!crates
+!packages
+!scripts
+!tools
+!tests

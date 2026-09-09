@@ -1,0 +1,139 @@
+name: AppImage
+
+on:
+  workflow_dispatch:
+    inputs:
+      apt_mirror:
+        description: "Debian buster archive mirror used inside the build container"
+        required: false
+        default: "http://archive.debian.org"
+        type: string
+      rust_mirror:
+        description: "Rustup/crates mirror (empty = official static.rust-lang.org / crates.io)"
+        required: false
+        default: ""
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: appimage-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build x86_64 AppImage (Debian 10)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache
+          df -h /
+
+      - name: Build AppImage in the Debian 10 container
+        env:
+          APT_MIRROR: ${{ inputs.apt_mirror || 'http://archive.debian.org' }}
+          RUST_MIRROR: ${{ inputs.rust_mirror }}
+        run: |
+          scripts/release/appimage/build.sh \
+            --platform linux/amd64 \
+            --apt-mirror "$APT_MIRROR" \
+            --rust-mirror "$RUST_MIRROR"
+
+      - name: Record version and checksum
+        id: metadata
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          cd build/appimage
+          appimage="codexhost-${version}-x86_64.AppImage"
+          test -s "$appimage"
+          sha256sum "$appimage" > "${appimage}.sha256"
+          cat "${appimage}.sha256"
+
+      - name: Smoke-test on Debian 10
+        env:
+          EXPECTED_VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          docker run --rm --volume "$PWD/build/appimage:/app:ro" --workdir /tmp \
+            --env EXPECTED_VERSION debian:10 sh -c '
+              set -eu
+              test "$(uname -m)" = x86_64
+              appimage="$(echo /app/codexhost-*-x86_64.AppImage)"
+              test -x "$appimage"
+              "$appimage" --appimage-extract > /dev/null
+              test "$(./squashfs-root/AppRun --version)" = "$EXPECTED_VERSION"
+              if ldd squashfs-root/usr/bin/codexhost | grep -q "not found"; then
+                ldd squashfs-root/usr/bin/codexhost
+                exit 1
+              fi
+              squashfs-root/usr/node/bin/node --version
+              set +e
+              squashfs-root/usr/bin/codexhost inspect > inspect.log 2>&1
+              status=$?
+              set -e
+              if [ "$status" -ne 0 ] && ! grep -q "codexhost launcher:" inspect.log; then
+                cat inspect.log
+                exit 1
+              fi
+              echo "launcher binary executed on Debian 10 (exit ${status}, expected without Codex Desktop)"
+              cat inspect.log
+            '
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codexhost-appimage-x86_64
+          path: |
+            build/appimage/codexhost-*_64.AppImage
+            build/appimage/codexhost-*_64.AppImage.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Attach AppImage to GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - name: Download AppImage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: codexhost-appimage-x86_64
+          path: release-assets
+
+      - name: Wait for the release and upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          appimage="release-assets/codexhost-${VERSION}-x86_64.AppImage"
+          test -s "$appimage"
+          test -s "${appimage}.sha256"
+          for attempt in $(seq 1 45); do
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+              gh release upload "$TAG" "$appimage" "${appimage}.sha256" --clobber \
+                --repo "$GITHUB_REPOSITORY"
+              echo "uploaded ${appimage} to ${TAG}"
+              exit 0
+            fi
+            echo "waiting for release ${TAG} (${attempt}/45)"
+            sleep 60
+          done
+          echo "release ${TAG} was not published within 45 minutes" >&2
+          exit 1

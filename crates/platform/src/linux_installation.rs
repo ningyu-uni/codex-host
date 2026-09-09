@@ -1,3 +1,5 @@
+use std::env;
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -5,10 +7,11 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use super::installation::{canonical_unix_executable, sha256_file};
-use crate::{DesktopIdentity, DesktopInstallation, PlatformError};
+use crate::{CUSTOM_INSTALL_ROOT_ENV, DesktopIdentity, DesktopInstallation, PlatformError};
 
 const LINUX_INSTALL_ROOT: &str = "/usr/lib/chatgpt";
 const LINUX_DESKTOP_LAUNCHER: &str = "/usr/bin/chatgpt";
+const LINUX_PACKAGED_LAUNCHER: &str = "codex-launcher";
 const LINUX_PACKAGE_NAME: &str = "chatgpt";
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 const ELF_CLASS_64: u8 = 2;
@@ -118,8 +121,10 @@ fn linux_installation(
 
     let desktop_executable =
         canonical_linux_elf(&install_root.join("ChatGPT"), "Desktop executable")?;
-    let packaged_launcher =
-        canonical_unix_executable(&install_root.join("codex-launcher"), "Desktop launcher")?;
+    let packaged_launcher = canonical_unix_executable(
+        &install_root.join(LINUX_PACKAGED_LAUNCHER),
+        "Desktop launcher",
+    )?;
     let packaged_codex_cli =
         canonical_linux_elf(&install_root.join("resources/codex"), "Codex CLI")?;
     if !desktop_executable.starts_with(&install_root)
@@ -131,15 +136,16 @@ fn linux_installation(
             install_root.display()
         )));
     }
-    let launcher_metadata = launcher_path.symlink_metadata().map_err(|error| {
+    launcher_path.symlink_metadata().map_err(|error| {
         PlatformError::NotFound(format!(
             "official ChatGPT launcher '{}' is unavailable: {error}",
             launcher_path.display()
         ))
     })?;
-    if !launcher_metadata.file_type().is_symlink()
-        || launcher_path.canonicalize().map_err(PlatformError::Io)? != packaged_launcher
-    {
+    // The distribution launcher is a symlink into the package, while an
+    // unpacked root passes its own `codex-launcher`. Canonical equality covers
+    // both without letting an unrelated executable claim the launcher path.
+    if launcher_path.canonicalize().map_err(PlatformError::Io)? != packaged_launcher {
         return Err(PlatformError::Invalid(format!(
             "official ChatGPT launcher '{}' does not resolve to '{}'",
             launcher_path.display(),
@@ -178,7 +184,19 @@ fn linux_installation(
     })
 }
 
+fn custom_install_root(value: impl Fn(&'static str) -> Option<OsString>) -> Option<PathBuf> {
+    value(CUSTOM_INSTALL_ROOT_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
 pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
+    // An unpacked package - a `dpkg-deb -x` payload or an extracted AppImage -
+    // installs no `/usr/bin/chatgpt` symlink, so the root names the launcher.
+    if let Some(root) = custom_install_root(env::var_os) {
+        let launcher = root.join(LINUX_PACKAGED_LAUNCHER);
+        return linux_installation(&root, &launcher);
+    }
     linux_installation(
         Path::new(LINUX_INSTALL_ROOT),
         Path::new(LINUX_DESKTOP_LAUNCHER),
@@ -265,6 +283,48 @@ mod tests {
         );
         fs::remove_dir_all(root).expect("remove fixture");
         fs::remove_file(launcher).expect("remove launcher");
+    }
+
+    #[test]
+    fn accepts_an_unpacked_root_whose_launcher_is_the_packaged_launcher() {
+        let root = fixture("chatgpt", "prod");
+        let launcher = root.join("codex-launcher");
+        let installation = linux_installation(&root, &launcher).expect("unpacked Linux package");
+        assert_eq!(
+            installation.install_root,
+            root.canonicalize().expect("root")
+        );
+        assert_eq!(installation.desktop_launcher, launcher);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn rejects_a_launcher_outside_the_package() {
+        let root = fixture("chatgpt", "prod");
+        let external = root.parent().expect("parent").join("external-launcher");
+        fs::write(&external, b"launcher").expect("write external launcher");
+        fs::set_permissions(&external, fs::Permissions::from_mode(0o755))
+            .expect("make external executable");
+        assert!(matches!(
+            linux_installation(&root, &external),
+            Err(PlatformError::Invalid(_))
+        ));
+        fs::remove_dir_all(root).expect("remove fixture");
+        fs::remove_file(external).expect("remove external launcher");
+    }
+
+    #[test]
+    fn reads_the_custom_install_root_override() {
+        assert_eq!(super::custom_install_root(|_| None), None);
+        assert_eq!(
+            super::custom_install_root(|_| Some(std::ffi::OsString::new())),
+            None
+        );
+        assert_eq!(
+            super::custom_install_root(|name| (name == crate::CUSTOM_INSTALL_ROOT_ENV)
+                .then(|| std::ffi::OsString::from("/opt/chatgpt"))),
+            Some(std::path::PathBuf::from("/opt/chatgpt"))
+        );
     }
 
     #[test]

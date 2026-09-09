@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=codexhost
+Comment=Run Pi and other Harnesses inside Codex Desktop
+Exec=codexhost
+Icon=codexhost
+Categories=Development;
+Terminal=true

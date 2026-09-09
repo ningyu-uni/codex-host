@@ -106,6 +106,10 @@ pub const PROBE_INSTALL_ROOT_ENV: &str = "CODEXHOST_PROBE_INSTALL_ROOT";
 /// that holds `app/ChatGPT.exe` or the `app` directory that directly holds
 /// `ChatGPT.exe`, so installations with no registered AppX package can still
 /// be discovered.
+///
+/// On Linux it names an unpacked package root - a `dpkg-deb -x` payload or an
+/// extracted AppImage - that holds `ChatGPT`, `codex-launcher`, and
+/// `resources/`, so a Desktop outside `/usr/lib/chatgpt` can be discovered.
 pub const CUSTOM_INSTALL_ROOT_ENV: &str = "CODEXHOST_INSTALL_ROOT";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
