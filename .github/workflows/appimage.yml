@@ -73,6 +73,13 @@ jobs:
               test -x "$appimage"
               "$appimage" --appimage-extract > /dev/null
               test "$(./squashfs-root/AppRun --version)" = "$EXPECTED_VERSION"
+              plugins_root=squashfs-root/usr/app/plugins
+              test -s "$plugins_root/enabled.json"
+              grep -q '"omp"' "$plugins_root/enabled.json"
+              for plugin in pi claude-code omp; do
+                test -s "$plugins_root/$plugin/manifest.json"
+                test -s "$plugins_root/$plugin/plugin.mjs"
+              done
               if ldd squashfs-root/usr/bin/codexhost | grep -q "not found"; then
                 ldd squashfs-root/usr/bin/codexhost
                 exit 1

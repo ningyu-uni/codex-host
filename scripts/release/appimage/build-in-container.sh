@@ -44,6 +44,8 @@ install -m 0755 "$rust_output/codexhost-updater" "$app_directory/usr/libexec/cod
 
 node packages/host-runtime/scripts/build-release.mjs \
   --output "$app_directory/usr/app/host-runtime.mjs"
+node scripts/release/harness-plugins.mjs \
+  --output "$app_directory/usr/app/plugins"
 node packages/desktop-control/scripts/build-release.mjs \
   --output "$app_directory/usr/app/desktop-controller.mjs"
 install -m 0644 packages/renderer-extension/dist/production.js \
